@@ -47,6 +47,9 @@ cart_run*.png
 *api_key*
 *.pem
 
+# ---- Personal/local provider override (never the real course config) ----
+dtlab_config.local.env
+
 # ---- Local artifacts ----
 scrape_errors.log
 *.ova

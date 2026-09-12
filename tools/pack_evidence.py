@@ -288,8 +288,14 @@ GUARD_FIRED_RE = re.compile(r"chrome-extension://[^\s\"'<>]*blocked\.html")
 
 # ---- content redaction (P0.4): filenames are not enough; transcripts can
 #      contain the API key or PII seen on amazon.in pages ----
-KEY_RE = re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}")
-KEYLINE_RE = re.compile(r"(ANTHROPIC_API_KEY\s*[=:]\s*)[^\s\"']+")
+# Anthropic keys ("sk-ant-...") and OpenAI keys ("sk-..." / "sk-proj-...")
+# share the sk- prefix; matching it generically (rather than sk-ant- only)
+# means a locally-tested OpenAI key (dtlab_config.local.env, see
+# provisioning/dtlab_config.local.env.example) gets the same protection
+# as the course-default Anthropic key.
+KEY_RE = re.compile(r"sk-(?:ant-|proj-)?[A-Za-z0-9_\-]{8,}")
+KEYLINE_RE = re.compile(
+    r"((?:ANTHROPIC|OPENAI)_API_KEY\s*[=:]\s*)[^\s\"']+")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 # grouped as 5+5 with an optional separator: the freeze-time filter
 # already caught "98765 43210", and a transcript must not be the one
@@ -535,9 +541,9 @@ def redact_line(line):
     at any line length."""
     was_long = len(line) > REDACT_LINE_CAP
     n_key = n_line = n_email = n_phone = n_name = n_ident = 0
-    if "sk-ant-" in line:
+    if "sk-" in line:
         line, n_key = KEY_RE.subn("[REDACTED-API-KEY]", line)
-    if "ANTHROPIC_API_KEY" in line:
+    if "ANTHROPIC_API_KEY" in line or "OPENAI_API_KEY" in line:
         line, n_line = KEYLINE_RE.subn(r"\1[REDACTED]", line)
     if "@" in line:
         if was_long:
@@ -676,7 +682,7 @@ def scan_text_for_leaks(text):
     behind. That is what lets the caller treat any hit as fail-closed."""
     hits = 0
     for line in text.split("\n"):
-        if "sk-ant-" in line:
+        if "sk-" in line:
             hits += len(KEY_RE.findall(line))
         if "@" in line:
             if len(line) > REDACT_LINE_CAP:

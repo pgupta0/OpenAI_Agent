@@ -19,6 +19,14 @@ WS="$HOME/dtlab/workspace"
 # Shared constants (repo: dtlab_config.env, provisioned to ~/dtlab/).
 # shellcheck source=/dev/null
 [ -f "$HOME/dtlab/dtlab_config.env" ] && . "$HOME/dtlab/dtlab_config.env"
+# Personal, machine-local override — NEVER provisioned onto lab machines
+# and NEVER committed (see .gitignore). Lets you point YOUR OWN sandbox
+# at a different provider/model (e.g. OpenAI, for a free-credits smoke
+# test) without touching the course's tracked dtlab_config.env, which
+# stays the single source of truth for real runs. Template:
+# provisioning/dtlab_config.local.env.example.
+# shellcheck source=/dev/null
+[ -f "$HOME/dtlab/dtlab_config.local.env" ] && . "$HOME/dtlab/dtlab_config.local.env"
 # Final item count of the course questionnaire (115 per
 # questionnaire_instrument_source.md). Used for the completeness check only.
 EXPECTED_ITEMS="${DTLAB_EXPECTED_ITEMS:-115}"
@@ -274,13 +282,74 @@ else
 fi
 echo "=============================================="
 
-# 1. Claude API key. Stored ONLY in ~/.dtlab_env (chmod 600), sourced from
-#    .bashrc via one idempotent line. Never echoed, never in shell history,
-#    never typed while the screen recorder could be running.
+# 1. Provider API key. Stored ONLY in ~/.dtlab_env (chmod 600), sourced
+#    from .bashrc via one idempotent line. Never echoed, never in shell
+#    history, never typed while the screen recorder could be running.
+#    PROVIDER is normally 'anthropic' (the tracked course default); it is
+#    only ever 'openai' here on a machine that sourced a local override
+#    (dtlab_config.local.env) for personal/sandbox testing.
+PROVIDER="${DTLAB_PROVIDER:-anthropic}"
 ENVFILE="$HOME/.dtlab_env"
 # shellcheck source=/dev/null
 [ -f "$ENVFILE" ] && . "$ENVFILE"
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+if [ "$PROVIDER" = "openai" ]; then
+  # ---- OpenAI path (local/personal testing only) ----
+  if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo ""
+    echo "  Your OpenAI API key (from YOUR OWN platform.openai.com account)."
+    echo "  Input is HIDDEN — nothing will appear as you paste. Never paste"
+    echo "  this key anywhere else."
+    read -rsp "  Key (sk-...): " KEY; echo ""
+    if [[ "$KEY" == sk-* ]] && [ "${#KEY}" -ge 30 ]; then
+      # minimal live check BEFORE storing: a typo'd or revoked key must
+      # fail here, not mid-run
+      CODE=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 15 \
+        -H "Authorization: Bearer $KEY" \
+        "https://api.openai.com/v1/models" 2>/dev/null) || CODE=""
+      case "$CODE" in
+        2*) ok "key verified against the OpenAI API." ;;
+        401|403)
+          echo -e "${RED}The OpenAI API rejected this key (HTTP $CODE)."
+          echo -e "Nothing was stored. Check the key at platform.openai.com"
+          echo -e "and re-run dtlab-start. If a bad key was stored earlier,"
+          echo -e "reset it with:  rm ~/.dtlab_env${NC}"
+          exit 1 ;;
+        *)
+          echo ""
+          echo -e "${YEL}Could not verify the key against the OpenAI API"
+          echo -e "(HTTP '${CODE:-none}') — check the network and retry. A TA"
+          echo -e "can override: type OVERRIDE to store the key unverified"
+          echo -e "(the override is recorded); anything else stores nothing.${NC}"
+          read -rp "> " OV
+          if [ "$OV" = "OVERRIDE" ]; then
+            date -u +%FT%TZ > "$HOME/dtlab/.key_override"
+            note "unverified key stored on TA override (recorded in the manifest)"
+          else
+            echo -e "${RED}Nothing stored — re-run dtlab-start when the"
+            echo -e "network is back (or with a TA for the override).${NC}"
+            exit 1
+          fi ;;
+      esac
+      umask 077
+      printf 'export OPENAI_API_KEY=%q\n' "$KEY" > "$ENVFILE"
+      chmod 600 "$ENVFILE"
+      export OPENAI_API_KEY="$KEY"
+      # shellcheck disable=SC2016  # deliberately unexpanded: the line is
+      # sourced by future shells, not this one
+      grep -qs 'dtlab_env' "$HOME/.bashrc" || \
+        echo '[ -f "$HOME/.dtlab_env" ] && . "$HOME/.dtlab_env"  # dtlab_env' \
+          >> "$HOME/.bashrc"
+      ok "API key stored (600-permission env file)."
+    else
+      echo -e "${RED}That does not look like an OpenAI API key (sk-...)."
+      echo -e "Nothing was stored — re-run dtlab-start and paste the key from"
+      echo -e "platform.openai.com. (Stored-key reset: rm ~/.dtlab_env)${NC}"
+      exit 1
+    fi
+  else
+    ok "OpenAI API key present."
+  fi
+elif [ -z "${ANTHROPIC_API_KEY:-}" ]; then
   echo ""
   echo "  Your Claude API key (from YOUR OWN Anthropic account, created per"
   echo "  the setup checklist). Input is HIDDEN — nothing will appear as you"
@@ -345,13 +414,20 @@ fi
 # one-time confirmation — the ack lands in the manifest at pack time.
 SPENDACK="$HOME/dtlab/.spend_limit_ack"
 if [ ! -f "$SPENDACK" ]; then
-  read -rp "  Personal monthly spend limit (~\$20) set in your Anthropic Console? [y/N] " SL
+  if [ "$PROVIDER" = "openai" ]; then
+    SL_PROMPT="  Personal spend/budget limit set on platform.openai.com? [y/N] "
+    SL_HINT="platform.openai.com > Settings > Billing > Limits"
+  else
+    SL_PROMPT="  Personal monthly spend limit (~\$20) set in your Anthropic Console? [y/N] "
+    SL_HINT="Anthropic Console > Billing > Limits"
+  fi
+  read -rp "$SL_PROMPT" SL
   case "$SL" in
     [yY]*)
       date -u +%FT%TZ > "$SPENDACK"
       ok "spend-limit confirmation recorded (asked once)" ;;
     *)
-      echo -e "${RED}Set it now (Anthropic Console > Billing > Limits;"
+      echo -e "${RED}Set it now ($SL_HINT;"
       echo -e "takes ~2 minutes — it caps what a runaway session could"
       echo -e "cost YOU), then re-run dtlab-start.${NC}"
       exit 1 ;;
